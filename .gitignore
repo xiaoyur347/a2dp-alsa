@@ -1,0 +1,4 @@
+*.o
+*.a
+a2dp-alsa
+a2dp-buffer
