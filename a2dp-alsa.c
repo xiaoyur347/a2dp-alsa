@@ -29,6 +29,26 @@
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 
+#ifndef BLUEZ_VERSION
+#define BLUEZ_VERSION 4
+#endif
+
+#if BLUEZ_VERSION == 4
+#define ORG_BLUEZ_MEDIA "org.bluez.Media"
+#define ORG_BLUEZ_MEDIAENDPOINT "org.bluez.MediaEndpoint"
+#define ORG_BLUEZ_MEDIATRANSPORT "org.bluez.MediaTransport"
+#define ORG_BLUEZ_AUDIOSOURCE "org.bluez.AudioSource"
+#define ORG_BLUEZ_AUDIOSINK "org.bluez.AudioSink"
+#define PROPERTYCHANGED "PropertyChanged"
+#else
+#define ORG_BLUEZ_MEDIA "org.bluez.Media1"
+#define ORG_BLUEZ_MEDIAENDPOINT "org.bluez.MediaEndpoint1"
+#define ORG_BLUEZ_MEDIATRANSPORT "org.bluez.MediaTransport1"
+#define ORG_BLUEZ_AUDIOSOURCE "org.freedesktop.DBus.Properties"
+#define ORG_BLUEZ_AUDIOSINK "org.freedesktop.DBus.Properties"
+#define PROPERTYCHANGED "PropertiesChanged"
+#endif
+
 //#define DEBUG
 #ifdef DEBUG
 	#define debug_print(...) (fprintf (stderr, __VA_ARGS__))
@@ -156,6 +176,7 @@ int get_bluetooth_object(DBusConnection* conn, char *device, char **dev_path) {
 	DBusError err;
 	char *s, *method = FIND_ADAPTER;
 
+#if BLUEZ_VERSION == 4
 	dbus_error_init(&err);
 	debug_print("Getting object path for adapter %s\n", device);
 
@@ -189,6 +210,10 @@ int get_bluetooth_object(DBusConnection* conn, char *device, char **dev_path) {
 	dbus_message_unref(msg);
 	dbus_message_unref(reply);
 	*dev_path = strdup (s);
+#else
+	// org.bluez.Manager has been removed; just use hci0
+	*dev_path = strdup ("/org/bluez/hci0");
+#endif
 	return 1;
 }
 
@@ -268,7 +293,7 @@ int media_register_endpoint(DBusConnection* conn, char *bt_object, char *endpoin
 	dbus_error_init(&err);	
 	msg = dbus_message_new_method_call("org.bluez",
 		bt_object,			  // object to call on
-		"org.bluez.Media",	  // interface to call on
+		ORG_BLUEZ_MEDIA,	  // interface to call on
 		"RegisterEndpoint");  // method name
 	
 	//build the parameters
@@ -319,12 +344,14 @@ int transport_acquire (DBusConnection *conn, char *transport_path, int *fd, int 
 	dbus_error_init(&err);	
 	msg = dbus_message_new_method_call("org.bluez",
 		transport_path,			 	// object to call on
-		"org.bluez.MediaTransport",	  // interface to call on
+		ORG_BLUEZ_MEDIATRANSPORT,	  // interface to call on
 		"Acquire");  			// method name
-	
+
+#if BLUEZ_VERSION == 4
 	//build the parameters
 	dbus_message_iter_init_append (msg, &iter);
 	dbus_message_iter_append_basic (&iter, DBUS_TYPE_STRING, &access_type);
+#endif
 
 	//make the call
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
@@ -371,12 +398,14 @@ int transport_release (DBusConnection *conn, char *transport_path) {
 	dbus_error_init(&err);	
 	msg = dbus_message_new_method_call("org.bluez",
 		transport_path,		 	// object to call on
-		"org.bluez.MediaTransport",	  // interface to call on
+		ORG_BLUEZ_MEDIATRANSPORT,	  // interface to call on
 		"Release");  			// method name
-	
+
+#if BLUEZ_VERSION == 4
 	//build the parameters
 	dbus_message_iter_init_append (msg, &iter);
 	dbus_message_iter_append_basic (&iter, DBUS_TYPE_STRING, &access_type);
+#endif
 
 	//make the call
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
@@ -807,6 +836,9 @@ DBusMessage* endpoint_release (DBusMessage *msg) {
  #define audiosink_property_changed audiosource_property_changed
 void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int write, io_thread_tcb_s **io_threads_table) {
 	DBusMessageIter iter, itervariant;
+#if BLUEZ_VERSION >= 5
+	DBusMessageIter iterarray, iterdict;
+#endif
 	char *key;
 	char *dev_path;
 	char *state;
@@ -816,10 +848,23 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
 	
 	dbus_message_iter_init (msg, &iter);
     dbus_message_iter_get_basic (&iter, &key);
+#if BLUEZ_VERSION == 4
     if (strcasecmp (key, "State") != 0) return; //we are only interested in this.
+#else
+	if (strcasecmp (key, "org.bluez.MediaTransport1") != 0) return; //we are only interested in this.
+#endif
     
     if (!dbus_message_iter_next(&iter)) goto fail;
+#if BLUEZ_VERSION == 4
     dbus_message_iter_recurse(&iter, &itervariant);
+#else
+	dbus_message_iter_recurse(&iter, &iterarray);
+    dbus_message_iter_recurse(&iterarray, &iterdict);
+    dbus_message_iter_get_basic(&iterdict, &state);
+    if(strcasecmp(state, "State") != 0) return;
+    if(!dbus_message_iter_next(&iterdict)) goto fail;
+    dbus_message_iter_recurse(&iterdict, &itervariant);
+#endif
     if (dbus_message_iter_get_arg_type(&itervariant) != DBUS_TYPE_STRING) goto fail;
     dbus_message_iter_get_basic (&itervariant, &state);
     
@@ -830,7 +875,11 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
 	if (!head) return;
 	io_data = head;
 	do {
-		if (strcasecmp (dev_path, io_data->dev_path) == 0 && 
+#if BLUEZ_VERSION == 4
+		if (strcasecmp (dev_path, io_data->dev_path) == 0 &&
+#else
+		if (strncasecmp (dev_path, io_data->dev_path, strlen(io_data->dev_path)) == 0 &&
+#endif
 			io_data->write == write) 
 			break;
 		else io_data = io_data->hh.next;
@@ -839,14 +888,22 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
     
     //decode state & transition
     new_state = transition = -1;
+#if BLUEZ_VERSION == 4
     if ( strcasecmp (state, "connected") == 0 ) new_state = STATE_CONNECTED;
     else if ( strcasecmp (state, "playing") == 0 ) new_state = STATE_PLAYING;
+#else
+    if ( strcasecmp (state, "pending") == 0 ) new_state = STATE_CONNECTED;
+    else if ( strcasecmp (state, "active") == 0 ) new_state = STATE_PLAYING;
+#endif
     else if ( strcasecmp (state, "disconnected") == 0 ) new_state = STATE_DISCONNECTED;
     if (new_state >= 0) {
+#if BLUEZ_VERSION == 4
 		transition = io_data->prev_state << 4 | new_state;
+#endif
 		io_data->prev_state = new_state;
 	}
-    
+
+#if BLUEZ_VERSION == 4    
     //our treatment of sink and source is a bit different
     switch (write) {
 		case 0: // bt sink: bt --> alsa
@@ -859,6 +916,10 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
 			when_to_release = STATE_CONNECTED << 4 | STATE_DISCONNECTED;		
 			break;
 	}
+#else
+	when_to_acquire = STATE_CONNECTED;
+	when_to_release = STATE_DISCONNECTED;
+#endif
     
     //acquire or release transport depending on the transitions
     if (transition == when_to_acquire) {
@@ -1294,11 +1355,11 @@ int main(int argc, char** argv)
 	
 	// 3. capture signals
 	if (run_sink) { // bt --> alsa
-		dbus_bus_add_match (system_bus, "type='signal',interface='org.bluez.AudioSource',member='PropertyChanged'", &err);
+		dbus_bus_add_match (system_bus, "type='signal',interface='" ORG_BLUEZ_AUDIOSOURCE "',member='" PROPERTYCHANGED "'", &err);
 		handle_dbus_error (&err, __FUNCTION__, __LINE__);
 	}
 	if (run_source) { // alsa --> bt
-		dbus_bus_add_match (system_bus, "type='signal',interface='org.bluez.AudioSink',member='PropertyChanged'", &err);
+		dbus_bus_add_match (system_bus, "type='signal',interface='" ORG_BLUEZ_AUDIOSINK "',member='" PROPERTYCHANGED "'", &err);
 		handle_dbus_error (&err, __FUNCTION__, __LINE__);
 	}
 
@@ -1307,17 +1368,26 @@ int main(int argc, char** argv)
 		while (!quit && (msg = dbus_connection_pop_message (system_bus))) { //get the message
 			// dispatch
 			reply = NULL;
+#if BLUEZ_VERSION == 4
 			if (dbus_message_is_signal (msg, "org.bluez.AudioSource", "PropertyChanged")) // bt --> alsa
 				audiosource_property_changed (system_bus, msg, 0, &io_threads_table);
 			else if (dbus_message_is_signal (msg, "org.bluez.AudioSink", "PropertyChanged")) // alsa --> bt
 				audiosink_property_changed (system_bus, msg, 1, &io_threads_table);
-			else if (dbus_message_is_method_call (msg, "org.bluez.MediaEndpoint", "SetConfiguration"))
+#else
+			if (dbus_message_is_signal (msg, "org.freedesktop.DBus.Properties", "PropertiesChanged")) {
+				if (run_sink)
+					audiosource_property_changed (system_bus, msg, 0, &io_threads_table);
+				else
+					audiosink_property_changed (system_bus, msg, 1, &io_threads_table);
+			}
+#endif
+			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "SetConfiguration"))
 				reply = endpoint_set_configuration (msg, &io_threads_table);
-			else if (dbus_message_is_method_call (msg, "org.bluez.MediaEndpoint", "SelectConfiguration"))
+			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "SelectConfiguration"))
 				reply = endpoint_select_configuration (msg);
-			else if(dbus_message_is_method_call (msg, "org.bluez.MediaEndpoint", "ClearConfiguration"))
+			else if(dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "ClearConfiguration"))
 				reply = endpoint_clear_configuration (msg, &io_threads_table);
-			else if (dbus_message_is_method_call (msg, "org.bluez.MediaEndpoint", "Release"))
+			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "Release"))
 				{ reply = endpoint_release (msg); quit=1; }
 			if (reply) {
 				// send the reply
