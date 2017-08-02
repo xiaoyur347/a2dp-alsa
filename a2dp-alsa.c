@@ -49,12 +49,30 @@
 #define PROPERTYCHANGED "PropertiesChanged"
 #endif
 
+#include <time.h>
+#include <sys/time.h>
+const char *get_time() {
+	static __thread char szTime[64];
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+
+	struct tm tim;
+	localtime_r(&tv.tv_sec, &tim);
+
+	sprintf(szTime,"%d/%02d/%02d %02d:%02d:%02d.%03ld",
+			tim.tm_year+1900,tim.tm_mon+1,tim.tm_mday,
+			tim.tm_hour,tim.tm_min,tim.tm_sec,(long)tv.tv_usec/1000);
+	return szTime;
+}
+
 //#define DEBUG
 #ifdef DEBUG
-	#define debug_print(...) (fprintf (stderr, __VA_ARGS__))
+	#define debug_print(format, ...) fprintf(stderr, "[%s][%s:%d]" format "\n", get_time(), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 #else
 	#define debug_print(...)
 #endif
+
+#define error_print(format, ...) fprintf(stderr, "[%s][%s:%d]" format "\n", get_time(), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
 // bluez specific defines & includes
 #define FIND_ADAPTER "FindAdapter"
@@ -135,7 +153,7 @@ int run_once = 0; // only run output once, then exit
  ********************/
 int handle_dbus_error (DBusError *err, const char *func, int line) {
 	if (dbus_error_is_set (err)) {
-		fprintf(stderr, "DBus error %s at %u: %s\n", func, line, err->message);
+		error_print("DBus error %s at %u: %s", func, line, err->message);
 		dbus_error_free(err);
 		return 1;
 	}
@@ -158,7 +176,7 @@ int get_system_bus(DBusConnection **system_bus) {
 	if (NULL == conn) return 0;
 	
 	*system_bus = conn;
-	debug_print("Name %s\n", dbus_bus_get_unique_name (conn));
+	debug_print("Name %s", dbus_bus_get_unique_name (conn));
 	return 1;
 }
 
@@ -178,7 +196,7 @@ int get_bluetooth_object(DBusConnection* conn, char *device, char **dev_path) {
 
 #if BLUEZ_VERSION == 4
 	dbus_error_init(&err);
-	debug_print("Getting object path for adapter %s\n", device);
+	debug_print("Getting object path for adapter %s", device);
 
 	// create a new method call msg
 	if (!device) method = DEFAULT_ADAPTER;
@@ -195,7 +213,6 @@ int get_bluetooth_object(DBusConnection* conn, char *device, char **dev_path) {
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
 	handle_dbus_error (&err, __FUNCTION__, __LINE__);
 	if (!reply) {
-		fprintf(stderr, "Reply Null\n");
 		return 0;
 	}
 
@@ -206,7 +223,7 @@ int get_bluetooth_object(DBusConnection* conn, char *device, char **dev_path) {
 	else return 0;
 	
 	// free reply and close connection
-	debug_print("Object path for %s is %s\n", device, s);
+	debug_print("Object path for %s is %s", device, s);
 	dbus_message_unref(msg);
 	dbus_message_unref(reply);
 	*dev_path = strdup (s);
@@ -314,7 +331,6 @@ int media_register_endpoint(DBusConnection* conn, char *bt_object, char *endpoin
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
 	handle_dbus_error (&err, __FUNCTION__, __LINE__);
 	if (!reply) {
-		fprintf(stderr, "Reply Null\n");
 		return 0;
 	}
 	
@@ -340,7 +356,7 @@ int transport_acquire (DBusConnection *conn, char *transport_path, int *fd, int 
 	DBusError err;
 	char *access_type = ACCESS_TYPE;
 	
-	debug_print ("acquire %s\n", transport_path);
+	debug_print ("acquire %s", transport_path);
 	dbus_error_init(&err);	
 	msg = dbus_message_new_method_call("org.bluez",
 		transport_path,			 	// object to call on
@@ -357,7 +373,6 @@ int transport_acquire (DBusConnection *conn, char *transport_path, int *fd, int 
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
 	handle_dbus_error (&err, __FUNCTION__, __LINE__);
 	if (!reply) {
-		fprintf(stderr, "Reply Null\n");
 		return 0;
 	}
 	
@@ -394,7 +409,7 @@ int transport_release (DBusConnection *conn, char *transport_path) {
 	DBusError err;
 	char *access_type = ACCESS_TYPE;
 	
-	debug_print ("release %s\n", transport_path);
+	debug_print ("release %s", transport_path);
 	dbus_error_init(&err);	
 	msg = dbus_message_new_method_call("org.bluez",
 		transport_path,		 	// object to call on
@@ -411,7 +426,6 @@ int transport_release (DBusConnection *conn, char *transport_path) {
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
 	handle_dbus_error (&err, __FUNCTION__, __LINE__);
 	if (!reply) {
-		fprintf(stderr, "Reply Null\n");
 		return 0;
 	}
 		
@@ -450,7 +464,7 @@ static uint8_t a2dp_default_bitpool(uint8_t freq, uint8_t mode) {
                     return 53;
 
                 default:
-                    fprintf (stderr, "Invalid channel mode %u", mode);
+                    error_print ("Invalid channel mode %u", mode);
                     return 53;
             }
 
@@ -466,12 +480,12 @@ static uint8_t a2dp_default_bitpool(uint8_t freq, uint8_t mode) {
                     return 51;
 
                 default:
-                    fprintf (stderr, "Invalid channel mode %u", mode);
+                    error_print ("Invalid channel mode %u", mode);
                     return 51;
             }
 
         default:
-            fprintf (stderr, "Invalid sampling freq %u", freq);
+            error_print ("Invalid sampling freq %u", freq);
             return 53;
     }
 }
@@ -500,7 +514,7 @@ void setup_sbc(sbc_t *sbc, a2dp_sbc_t *cap)  {
             sbc->frequency = SBC_FREQ_48000;
             break;
         default:
-			fprintf (stderr, "No supported frequency");
+			error_print ("No supported frequency");
     }
 
     switch (cap->channel_mode) {
@@ -517,7 +531,7 @@ void setup_sbc(sbc_t *sbc, a2dp_sbc_t *cap)  {
             sbc->mode = SBC_MODE_JOINT_STEREO;
             break;
         default:
-			fprintf (stderr, "No supported channel_mode");
+			error_print ("No supported channel_mode");
     }
 
     switch (cap->allocation_method) {
@@ -528,7 +542,7 @@ void setup_sbc(sbc_t *sbc, a2dp_sbc_t *cap)  {
             sbc->allocation = SBC_AM_LOUDNESS;
             break;
         default:
-			fprintf (stderr, "No supported allocation");
+			error_print ("No supported allocation");
     }
 
     switch (cap->subbands) {
@@ -539,7 +553,7 @@ void setup_sbc(sbc_t *sbc, a2dp_sbc_t *cap)  {
             sbc->subbands = SBC_SB_8;
             break;
         default:
-			fprintf (stderr, "No supported subbands");
+			error_print ("No supported subbands");
     }
 
     switch (cap->block_length) {
@@ -556,7 +570,7 @@ void setup_sbc(sbc_t *sbc, a2dp_sbc_t *cap)  {
             sbc->blocks = SBC_BLK_16;
             break;
         default:
-			fprintf (stderr, "No supported block length");
+			error_print ("No supported block length");
     }
 
 	sbc->bitpool = cap->max_bitpool;
@@ -587,7 +601,7 @@ DBusMessage* endpoint_select_configuration (DBusMessage *msg) {
     DBusMessage *reply;
     DBusError err;
 
-	debug_print ("Select configuration\n");
+	debug_print ("Select configuration");
     dbus_error_init(&err);
 
     if (!dbus_message_get_args(msg, &err, DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE, &cap, &size, DBUS_TYPE_INVALID)) {
@@ -607,7 +621,7 @@ DBusMessage* endpoint_select_configuration (DBusMessage *msg) {
 	else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
 		config.channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
 	} else {
-		fprintf (stderr, "No supported channel modes");
+		error_print ("No supported channel modes");
 		goto fail;
 	}
 
@@ -620,7 +634,7 @@ DBusMessage* endpoint_select_configuration (DBusMessage *msg) {
     else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_4)
         config.block_length = BT_A2DP_BLOCK_LENGTH_4;
     else {
-        fprintf (stderr, "No supported block lengths");
+        error_print ("No supported block lengths");
         goto fail;
     }
 
@@ -629,7 +643,7 @@ DBusMessage* endpoint_select_configuration (DBusMessage *msg) {
     else if (cap->subbands & BT_A2DP_SUBBANDS_4)
         config.subbands = BT_A2DP_SUBBANDS_4;
     else {
-        fprintf (stderr, "No supported subbands");
+        error_print ("No supported subbands");
         goto fail;
     }
 
@@ -715,7 +729,7 @@ DBusMessage* endpoint_set_configuration (DBusMessage *msg, io_thread_tcb_s **io_
         }
         dbus_message_iter_next(&iterprop);
     }
-    debug_print ("Set configuration %s\n",transport_path);
+    debug_print ("Set configuration %s",transport_path);
 
     //capture the transport_path and allocate the transport later, when the audiosource is "connected".
     HASH_FIND_STR (head, transport_path, io_data);
@@ -767,12 +781,12 @@ DBusMessage* endpoint_clear_configuration (DBusMessage *msg, io_thread_tcb_s **i
 	dbus_error_init(&err);
     dbus_message_iter_init(msg, &iter);
     dbus_message_iter_get_basic(&iter, &transport_path);
-	debug_print ("Clear configuration %s\n",transport_path);    
+	debug_print ("Clear configuration %s",transport_path);    
     
     // stop stream
     HASH_FIND_STR (head, transport_path, io_data);
     if (io_data) {
-		debug_print ("stopping thread %p\n",io_data);
+		debug_print ("stopping thread %p",io_data);
 		HASH_DEL (head, io_data);
 		*io_threads_table = head;
 		destroy_io_thread (io_data); 
@@ -796,7 +810,7 @@ DBusMessage* endpoint_clear_configuration (DBusMessage *msg, io_thread_tcb_s **i
  * @returns reply message (success or failure)
  *********************/
 DBusMessage* endpoint_release (DBusMessage *msg) {
-	debug_print ("Release endpoint\n");
+	debug_print ("Release endpoint");
 	DBusMessage *reply;
 	DBusError err;
 
@@ -869,7 +883,7 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
     dbus_message_iter_get_basic (&itervariant, &state);
     
 	dev_path = (char *)dbus_message_get_path (msg);
-    debug_print ("state for %s: %s\n", dev_path, state);
+    debug_print ("state for %s: %s", dev_path, state);
   
 	//look for our thread
 	if (!head) return;
@@ -924,7 +938,7 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
     //acquire or release transport depending on the transitions
     if (transition == when_to_acquire) {
 		if (transport_acquire (conn, io_data->transport_path, &io_data->fd, &io_data->read_mtu, &io_data->write_mtu)) {
-			debug_print ("fd: %d read mtu %d write mtu %d\n", io_data->fd, io_data->read_mtu, io_data->write_mtu);
+			debug_print ("fd: %d read mtu %d write mtu %d", io_data->fd, io_data->read_mtu, io_data->write_mtu);
 			io_thread_set_command (io_data, IO_CMD_RUNNING);
 		}
 	} else if (transition == when_to_release) {
@@ -934,7 +948,7 @@ void audiosource_property_changed (DBusConnection *conn, DBusMessage *msg, int w
     return;
     
 fail:
-	debug_print ("bad signal\n");
+	debug_print ("bad signal");
 }
 
 
@@ -955,7 +969,7 @@ fail:
  *********************/
 void io_thread_set_command (io_thread_tcb_s *data, int command) {
 	pthread_mutex_lock (&data->mutex);
-	debug_print ("io cmd: %d\n", command);
+	debug_print ("io cmd: %d", command);
 	if (data->command != IO_CMD_TERMINATE)
 		data->command = command;
 	pthread_mutex_unlock (&data->mutex);
@@ -1024,7 +1038,7 @@ void stream_bt_output(io_thread_tcb_s *data) {
 	struct pollfd pollin = { 0, POLLIN, 0 }, pollout = { data->fd, POLLOUT, 0 };
 	int timeout;
 
-	debug_print ("write to bt\n");
+	debug_print ("write to bt");
 	
 	// get buffers
 	encode_bufsize = data->write_mtu;
@@ -1039,13 +1053,13 @@ void stream_bt_output(io_thread_tcb_s *data) {
 		ssize_t readlen;
 		
 		// wait until stdin has some data
-		//debug_print ("waiting stdin\n");
+		//debug_print ("waiting stdin");
 		pthread_mutex_unlock (&data->mutex);
 		timeout = poll (&pollin, 1, 1000); //delay 1s to allow others to update our state
 		pthread_mutex_lock (&data->mutex);
 		if (timeout == 0) continue;
 		if (timeout < 0) {
-			fprintf (stderr, "bt_write/stdin: %d\n", errno);
+			error_print ("bt_write/stdin: %d", errno);
 			break;
 		}
 		
@@ -1060,7 +1074,7 @@ void stream_bt_output(io_thread_tcb_s *data) {
 		
 		// encode bluetooth
 		// all of our source is guaranteed to fit  in a single packet
-		//debug_print ("encoding\n");
+		//debug_print ("encoding");
 		
 		struct rtp_header *header;
 		struct rtp_payload *payload;
@@ -1076,18 +1090,18 @@ void stream_bt_output(io_thread_tcb_s *data) {
 		unsigned frame_count = 0;
 
 		while (to_encode >= sbc_get_codesize(&data->sbc)) {
-			//fprintf (stderr, "%zu ", to_encode);
+			//error_print ("%zu ", to_encode);
 			ssize_t written;
 			ssize_t encoded;
 			
-			//debug_print ("%p %d %d\n", d, to_write, sbc_get_frame_length (&data->sbc));
+			//debug_print ("%p %d %d", d, to_write, sbc_get_frame_length (&data->sbc));
 			encoded = sbc_encode(&data->sbc,
 								 p, to_encode,
 								 d, to_write,
 								 &written);
 
 			if (encoded <= 0) {
-				fprintf (stderr, "SBC encoding error %zd\n", encoded);
+				error_print ("SBC encoding error %zd", encoded);
 				break; // make do with what have
 			}
 
@@ -1114,23 +1128,23 @@ void stream_bt_output(io_thread_tcb_s *data) {
 		// how much to output
 		nbytes = (uint8_t*) d - (uint8_t*) encode_buf;
 
-		//debug_print ("nbytes: %zu\n", nbytes);
+		//debug_print ("nbytes: %zu", nbytes);
 		if (!nbytes) break; // don't write if there is nothing to write
 	
 		// wait until bluetooth is ready
 		while (data->command == IO_CMD_RUNNING) {
-			//debug_print ("waiting for bluetooth\n");
+			//debug_print ("waiting for bluetooth");
 			pthread_mutex_unlock (&data->mutex);
 			timeout = poll (&pollout, 1, 1000); //delay 1s to allow others to update our state
 			pthread_mutex_lock (&data->mutex);
 			if (timeout == 0) continue;
-			if (timeout < 0) fprintf (stderr, "bt_write/bluetooth: %d\n", errno);
+			if (timeout < 0) error_print ("bt_write/bluetooth: %d", errno);
 			break;
 		}
 		
 		// write bluetooth
 		if (timeout > 0) {
-			//debug_print ("flush bluetooth\n");
+			//debug_print ("flush bluetooth");
 			write (data->fd, encode_buf, nbytes);
 		}
 	}
@@ -1152,7 +1166,7 @@ void stream_bt_input(io_thread_tcb_s *data) {
 	struct pollfd pollin = { data->fd, POLLIN, 0 }, pollout = { 1, POLLOUT, 0 };
 	int timeout;
 	
-	debug_print ("read from bt\n");
+	debug_print ("read from bt");
 	
 	// get buffers
 	bufsize = data->read_mtu;
@@ -1167,13 +1181,13 @@ void stream_bt_input(io_thread_tcb_s *data) {
 		ssize_t readlen=0;
 		
 		// wait until bluetooth has some data
-		//debug_print ("waiting bluetooth\n");
+		//debug_print ("waiting bluetooth");
 		pthread_mutex_unlock (&data->mutex);
 		timeout = poll (&pollin, 1, 1000); //delay 1s to allow others to update our state
 		pthread_mutex_lock (&data->mutex);
 		if (timeout == 0) continue;
 		if (timeout < 0) {
-			fprintf (stderr, "bt_read/bluetooth: %d\n", errno);
+			error_print ("bt_read/bluetooth: %d", errno);
 			break;
 		}
 		
@@ -1186,7 +1200,7 @@ void stream_bt_input(io_thread_tcb_s *data) {
 		if (readlen < 0) continue;
 		
 		// decode a2dp/sbc from pulseaudio
-		//debug_print ("decoding\n");
+		//debug_print ("decoding");
 		void *p = buf + sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 		size_t to_decode = readlen - sizeof(struct rtp_header) - sizeof(struct rtp_payload);
 		void *d = decode_buf;
@@ -1202,7 +1216,7 @@ void stream_bt_input(io_thread_tcb_s *data) {
 								 &written);
 
 			if (decoded <= 0) {
-				fprintf (stderr, "SBC decoding error %zd\n", decoded);
+				error_print ("SBC decoding error %zd", decoded);
 				break; // make do with what we have
 			}
 
@@ -1212,22 +1226,22 @@ void stream_bt_input(io_thread_tcb_s *data) {
 			to_write -= written;
 			//debug_print ("%zu ", decode_bufsize - to_write);
 		}
-		// debug_print ("\n");
+		// debug_print ("");
 		
 		// wait until stdout is ready
 		while (data->command == IO_CMD_RUNNING) {
-			//debug_print ("waiting for stdout\n");
+			//debug_print ("waiting for stdout");
 			pthread_mutex_unlock (&data->mutex);
 			timeout = poll (&pollout, 1, 1000); //delay 1s to allow others to update our state
 			pthread_mutex_lock (&data->mutex);
 			if (timeout == 0) continue;
-			else if (timeout < 0) fprintf (stderr, "bt_read/stdout: %d\n", errno);
+			else if (timeout < 0) error_print ("bt_read/stdout: %d", errno);
 			break;
 		}
 		
 		// write stdout
 		if (timeout > 0) {
-			//debug_print ("flushing stdout\n");
+			//debug_print ("flushing stdout");
 			write (1, decode_buf, decode_bufsize - to_write);
 		}
 	}
@@ -1259,7 +1273,7 @@ void *io_thread_run(void *ptr) {
 	io_thread_tcb_s *data = ptr;
 	
 	// prepare
-	debug_print ("starting %p\n", ptr);
+	debug_print ("starting %p", ptr);
 	pthread_mutex_lock (&data->mutex);
 	sbc_init (&data->sbc, 0);
 	
@@ -1271,7 +1285,7 @@ void *io_thread_run(void *ptr) {
 				break;
 				
 			case IO_CMD_RUNNING:
-				debug_print ("running %p\n", ptr);
+				debug_print ("running %p", ptr);
 				setup_sbc (&data->sbc, &data->cap);
 				if (data->write) 
 					stream_bt_output(data);
@@ -1280,10 +1294,9 @@ void *io_thread_run(void *ptr) {
 				break;
 
 			case IO_CMD_TERMINATE:
-				debug_print ("terminate %p\n", ptr);
+				debug_print ("terminate %p", ptr);
 				goto end;
 		}
-		
 	}
 	
 end:
@@ -1296,62 +1309,36 @@ end:
 
 //////////////////////////////// MAIN ////////////////////////////////
 
-int main(int argc, char** argv)
+static DBusConnection* system_bus = NULL;
+char *bt_object = NULL;	// bluetooth device objectpath
+static int run_sink = 0, run_source = 0;
+static int msg_waiting_time = 1000; //-1 is wait forever
+
+static int loop(char *device)
 {
 	// Control variables
-	DBusConnection* system_bus;
-	char *bt_object;	// bluetooth device objectpath
 	io_thread_tcb_s *io_threads_table = NULL; // hashtable of io_threads
-	int msg_waiting_time = -1; //default is wait forever
-	
+
 	// scratch variables
 	DBusMessage *msg, *reply;
 	DBusError err;
-		
-	// 0. check options
-	const struct option options[] = {
-		{"help",    no_argument, 0,  'h' },
-		{"sink",    no_argument, 0,  's' },
-		{"source",  no_argument, 0,  'o' },
-		{"run-once", no_argument, 0, 'r' },
-		{0,         0,           0,  0 }
-	};
-	int option, run_sink=0, run_source=0;
-	while ((option = getopt_long (argc, argv, "h", (const struct option *) &options, NULL)) != -1) {
-		switch (option) {
-			case 'h':
-				fprintf (stderr,"Usage: a2dp-alsa [--sink|--source|--run-once] [hciX]\n");
-				return 0;
-			case 's':
-				debug_print ("run sink\n");
-				run_sink=1;
-				break;
-			case 'o':
-				debug_print ("run source\n");
-				run_source=1;
-				break;
-			case 'r':
-				debug_print ("run once\n");
-				run_once=1;
-				msg_waiting_time = 1000; //1000 ms = 1 s
-				break;
-		}
+	dbus_error_init(&err);
+	int run_sink_ret = 0, run_source_ret = 0;
+
+	quit = 0;
+
+	if (!get_bluetooth_object(system_bus, device, &bt_object)) {
+		return 1;
 	}
 	
-	// 1. init - get bus and adapter
-	debug_print ("a2dp started\n");
-	dbus_threads_init_default();
-	dbus_error_init(&err);
-	if (get_system_bus(&system_bus)) {
-		if (!get_bluetooth_object(system_bus, argv[optind], &bt_object)) return 1;
-	} else return 1;
-
-	// 2. register endpoint
 	if (run_sink) 
-		run_sink = media_register_endpoint(system_bus, bt_object, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID); // bt --> alsa
+		run_sink_ret = media_register_endpoint(system_bus, bt_object, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID); // bt --> alsa
 	if (run_source)
-		run_source = media_register_endpoint(system_bus, bt_object, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID); // alsa --> bt
-	if (!run_source && !run_sink) return 1;
+		run_source_ret = media_register_endpoint(system_bus, bt_object, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID); // alsa --> bt
+	if (!run_sink_ret && !run_source_ret) {
+		debug_print ("media_register_endpoint fail");
+		return 1;
+	}
 	
 	// 3. capture signals
 	if (run_sink) { // bt --> alsa
@@ -1369,26 +1356,42 @@ int main(int argc, char** argv)
 			// dispatch
 			reply = NULL;
 #if BLUEZ_VERSION == 4
-			if (dbus_message_is_signal (msg, "org.bluez.AudioSource", "PropertyChanged")) // bt --> alsa
+			if (dbus_message_is_signal (msg, "org.bluez.AudioSource", "PropertyChanged")) { // bt --> alsa
+				debug_print ("AudioSource");
 				audiosource_property_changed (system_bus, msg, 0, &io_threads_table);
-			else if (dbus_message_is_signal (msg, "org.bluez.AudioSink", "PropertyChanged")) // alsa --> bt
+			}
+			else if (dbus_message_is_signal (msg, "org.bluez.AudioSink", "PropertyChanged")) { // alsa --> bt
+				debug_print ("AudioSink");
 				audiosink_property_changed (system_bus, msg, 1, &io_threads_table);
+			}
 #else
 			if (dbus_message_is_signal (msg, "org.freedesktop.DBus.Properties", "PropertiesChanged")) {
-				if (run_sink)
+				if (run_sink) {
+					debug_print ("AudioSource");
 					audiosource_property_changed (system_bus, msg, 0, &io_threads_table);
-				else
+				}
+				else {
+					debug_print ("AudioSink");
 					audiosink_property_changed (system_bus, msg, 1, &io_threads_table);
+				}
 			}
 #endif
-			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "SetConfiguration"))
+			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "SetConfiguration")) {
+				debug_print ("SetConfiguration");
 				reply = endpoint_set_configuration (msg, &io_threads_table);
-			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "SelectConfiguration"))
+			}
+			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "SelectConfiguration")) {
+				debug_print ("SelectConfiguration");
 				reply = endpoint_select_configuration (msg);
-			else if(dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "ClearConfiguration"))
+			}
+			else if(dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "ClearConfiguration")) {
+				debug_print ("ClearConfiguration");
 				reply = endpoint_clear_configuration (msg, &io_threads_table);
-			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "Release"))
-				{ reply = endpoint_release (msg); quit=1; }
+			}
+			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "Release")) {
+				debug_print ("Release");
+				reply = endpoint_release (msg); quit=1;
+			}
 			if (reply) {
 				// send the reply
 				dbus_connection_send(system_bus, reply, NULL);
@@ -1407,10 +1410,63 @@ int main(int argc, char** argv)
 			p = next;
 		} while (p && p != io_threads_table);
 	}
+
+	return 0;
+}
+
+int main(int argc, char** argv)
+{
+	// 0. check options
+	const struct option options[] = {
+		{"help",    no_argument, 0,  'h' },
+		{"sink",    no_argument, 0,  's' },
+		{"source",  no_argument, 0,  'o' },
+		{"run-once", no_argument, 0, 'r' },
+		{0,         0,           0,  0 }
+	};
+	int option;
+	while ((option = getopt_long (argc, argv, "h", (const struct option *) &options, NULL)) != -1) {
+		switch (option) {
+			case 'h':
+				error_print ("Usage: a2dp-alsa [--sink|--source|--run-once] [hciX]");
+				return 0;
+			case 's':
+				debug_print ("run sink");
+				run_sink=1;
+				break;
+			case 'o':
+				debug_print ("run source");
+				run_source=1;
+				break;
+			case 'r':
+				debug_print ("run once");
+				run_once=1;
+				break;
+		}
+	}
+	
+	// 1. init - get bus and adapter
+	debug_print ("a2dp started");
+	dbus_threads_init_default();
+	if (!get_system_bus(&system_bus)) {
+		return 1;
+	}
+
+	// 2. register endpoint
+	while (1) {
+		int ret = loop(argv[optind]);
+		debug_print ("loop ret = %d", ret);
+		if (ret != 0) {
+			usleep(1000 * 1000);
+		}
+		if (run_once) {
+			break;
+		}
+	}
 	
 	// 6. cleanup and exit
 	dbus_connection_flush (system_bus);
 	dbus_connection_unref (system_bus);
-	debug_print ("a2dp ended\n\n");
+	debug_print ("a2dp ended");
 	return 0;
 }
