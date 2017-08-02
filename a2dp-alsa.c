@@ -133,7 +133,7 @@ typedef struct {
 void *io_thread_run(void *ptr);
 void io_thread_set_command (io_thread_tcb_s *data, int command);
 io_thread_tcb_s *create_io_thread();
-void destroy_io_thread(io_thread_tcb_s *p);
+void destroy_io_thread(DBusConnection *conn, io_thread_tcb_s *p);
 int transport_acquire (DBusConnection *conn, char *transport_path, int *fd, int *read_mtu, int *write_mtu);
 int transport_release (DBusConnection *conn, char *transport_path);
 
@@ -326,6 +326,47 @@ int media_register_endpoint(DBusConnection* conn, char *bt_object, char *endpoin
 	dbus_message_iter_close_container (&iter, &iterarray); 
 	
 	//char *buf; int buflen; dbus_message_marshal (msg, &buf, &buflen); write (1, buf, buflen); return 0;
+	
+	//make the call
+	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
+	if (dbus_error_is_set (&err) && strcmp(err.message, "Already Exists") != 0)  {
+		handle_dbus_error (&err, __FUNCTION__, __LINE__);
+		if (!reply) {
+			return 0;
+		}
+	}
+	
+	dbus_message_unref(msg);
+	if (reply)
+		dbus_message_unref(reply);
+	return 1;
+}
+
+/*****************//**
+ * Unregister our "endpoint" handler from bluez audio system.
+ * 
+ * @param [in] system bus connection
+ * @param [in] bluetooth object to unregister from
+ * @returns TRUE means ok, FALSE means something is wrong
+ ********************/
+int media_unregister_endpoint(DBusConnection* conn, char *bt_object, char *endpoint) {
+	DBusMessage *msg, *reply;
+	DBusMessageIter iter;
+	DBusError err;
+
+	debug_print("media_unregister_endpoint");
+
+	dbus_error_init(&err);	
+	msg = dbus_message_new_method_call("org.bluez",
+		bt_object,			  // object to call on
+		ORG_BLUEZ_MEDIA,	  // interface to call on
+		"UnregisterEndpoint");  // method name
+
+	//build the parameters
+	dbus_message_iter_init_append (msg, &iter);
+	
+	//first param - object path
+	dbus_message_iter_append_basic (&iter, DBUS_TYPE_OBJECT_PATH, &endpoint);
 	
 	//make the call
 	reply = dbus_connection_send_with_reply_and_block (conn, msg, -1, &err);
@@ -770,7 +811,7 @@ fail:
  * @param [in] io thread's data - to command I/O thread to stop.
  * @returns reply message (success or failure)
  *********************/
-DBusMessage* endpoint_clear_configuration (DBusMessage *msg, io_thread_tcb_s **io_threads_table) {
+DBusMessage* endpoint_clear_configuration (DBusConnection *conn, DBusMessage *msg, io_thread_tcb_s **io_threads_table) {
 	DBusMessage *reply;
 	DBusError err;
 	DBusMessageIter iter;
@@ -789,7 +830,7 @@ DBusMessage* endpoint_clear_configuration (DBusMessage *msg, io_thread_tcb_s **i
 		debug_print ("stopping thread %p",io_data);
 		HASH_DEL (head, io_data);
 		*io_threads_table = head;
-		destroy_io_thread (io_data); 
+		destroy_io_thread (conn, io_data); 
 	}
 	
 	reply = dbus_message_new_method_return(msg);
@@ -1003,13 +1044,14 @@ io_thread_tcb_s *create_io_thread() {
  * 
  * @param [in] thread control block
  *********************/
-void destroy_io_thread(io_thread_tcb_s *p) {
+void destroy_io_thread(DBusConnection *conn, io_thread_tcb_s *p) {
 	if (p) {
 		io_thread_set_command (p, IO_CMD_TERMINATE);
 		pthread_join (p->t_handle, NULL);
 		pthread_cond_destroy (&p->cond);
 		pthread_mutex_destroy (&p->mutex);		
 		if (p->transport_path) {
+			transport_release (conn, p->transport_path);
 			free (p->transport_path);
 			p->transport_path = NULL;
 		}
@@ -1324,6 +1366,7 @@ static int loop(char *device)
 	DBusError err;
 	dbus_error_init(&err);
 	int run_sink_ret = 0, run_source_ret = 0;
+	int release = 0;
 
 	quit = 0;
 
@@ -1386,11 +1429,13 @@ static int loop(char *device)
 			}
 			else if(dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "ClearConfiguration")) {
 				debug_print ("ClearConfiguration");
-				reply = endpoint_clear_configuration (msg, &io_threads_table);
+				reply = endpoint_clear_configuration (system_bus, msg, &io_threads_table);
 			}
 			else if (dbus_message_is_method_call (msg, ORG_BLUEZ_MEDIAENDPOINT, "Release")) {
 				debug_print ("Release");
-				reply = endpoint_release (msg); quit=1;
+				reply = endpoint_release (msg);
+				quit = 1;
+				release = 1;
 			}
 			if (reply) {
 				// send the reply
@@ -1406,9 +1451,16 @@ static int loop(char *device)
 		io_thread_tcb_s *p = io_threads_table, *next;
 		do {
 			next = p->hh.next;
-			destroy_io_thread (p);
+			destroy_io_thread (system_bus, p);
 			p = next;
 		} while (p && p != io_threads_table);
+	}
+
+	if (!release) {
+		if (run_sink) 
+			media_unregister_endpoint(system_bus, bt_object, A2DP_SINK_ENDPOINT); // bt --> alsa
+		if (run_source)
+			media_unregister_endpoint(system_bus, bt_object, A2DP_SOURCE_ENDPOINT); // alsa --> bt
 	}
 
 	return 0;
