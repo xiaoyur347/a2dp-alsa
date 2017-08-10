@@ -1205,7 +1205,7 @@ void stream_bt_output(io_thread_tcb_s *data) {
 void stream_bt_input(io_thread_tcb_s *data) {
 	void *buf, *decode_buf;
 	size_t bufsize, decode_bufsize;
-	struct pollfd pollin = { data->fd, POLLIN, 0 }, pollout = { 1, POLLOUT, 0 };
+	struct pollfd pollin = { data->fd, POLLIN, 0 };
 	int timeout;
 	
 	debug_print ("read from bt");
@@ -1213,8 +1213,7 @@ void stream_bt_input(io_thread_tcb_s *data) {
 	// get buffers
 	bufsize = data->read_mtu;
 	buf = malloc (bufsize);
-	decode_bufsize = (bufsize / sbc_get_frame_length (&data->sbc) + 1 ) * //max frames in a packet
-	                 sbc_get_codesize(&data->sbc);
+	decode_bufsize = sbc_get_codesize(&data->sbc);
 	decode_buf = malloc (decode_bufsize);
 	//debug_print ("codesize %d framelen %d", sbc_get_codesize(&data->sbc), sbc_get_frame_length(&data->sbc));
 	
@@ -1245,8 +1244,6 @@ void stream_bt_input(io_thread_tcb_s *data) {
 		//debug_print ("decoding");
 		void *p = buf + sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 		size_t to_decode = readlen - sizeof(struct rtp_header) - sizeof(struct rtp_payload);
-		void *d = decode_buf;
-		size_t to_write = decode_bufsize;
 		
 		while (to_decode > 0) {
 			size_t written;
@@ -1254,7 +1251,7 @@ void stream_bt_input(io_thread_tcb_s *data) {
 
 			decoded = sbc_decode(&data->sbc,
 								 p, to_decode,
-								 d, to_write,
+								 decode_buf, decode_bufsize,
 								 &written);
 
 			if (decoded <= 0) {
@@ -1264,27 +1261,9 @@ void stream_bt_input(io_thread_tcb_s *data) {
 
 			p = (uint8_t*) p + decoded;
 			to_decode -= decoded;
-			d = (uint8_t*) d + written;
-			to_write -= written;
-			//debug_print ("%zu ", decode_bufsize - to_write);
-		}
-		// debug_print ("");
-		
-		// wait until stdout is ready
-		while (data->command == IO_CMD_RUNNING) {
-			//debug_print ("waiting for stdout");
-			pthread_mutex_unlock (&data->mutex);
-			timeout = poll (&pollout, 1, 1000); //delay 1s to allow others to update our state
-			pthread_mutex_lock (&data->mutex);
-			if (timeout == 0) continue;
-			else if (timeout < 0) error_print ("bt_read/stdout: %d", errno);
-			break;
-		}
-		
-		// write stdout
-		if (timeout > 0) {
-			//debug_print ("flushing stdout");
-			write (1, decode_buf, decode_bufsize - to_write);
+
+			write (1, decode_buf, written);
+			//debug_print ("%zu ", written);
 		}
 	}
 	
